@@ -192,6 +192,69 @@ def download_audio(
     return final_path
 
 
+def extract_track_info_from_url(url: str) -> dict[str, Any]:
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "noplaylist": True,
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if not info:
+                return {}
+            entries = info.get("entries")
+            entry = entries[0] if entries else info
+
+            raw_title = entry.get("title") or ""
+            track = entry.get("track")
+            artist = (
+                entry.get("artist")
+                or entry.get("creator")
+                or entry.get("channel")
+                or entry.get("uploader")
+            )
+            duration = entry.get("duration")
+
+            import re
+            cleaned_title = re.sub(
+                r"[\(\[\{]\s*(?:official\s*(?:video|audio|music\s*video|lyric\s*video|visualizer)?|lyrics?|audio|video|hd|4k|remastered)\s*[\)\]\}]",
+                "",
+                raw_title,
+                flags=re.I,
+            ).strip(" -|:")
+
+            parsed_artist, parsed_title = None, None
+            if " - " in cleaned_title:
+                parts = cleaned_title.split(" - ", 1)
+                parsed_artist, parsed_title = parts[0].strip(), parts[1].strip()
+            elif " | " in cleaned_title:
+                parts = cleaned_title.split(" | ", 1)
+                parsed_title, parsed_artist = parts[0].strip(), parts[1].strip()
+            else:
+                parsed_title = cleaned_title
+                parsed_artist = artist
+
+            final_title = track or parsed_title or raw_title
+            final_artist = artist or parsed_artist
+            if final_title:
+                final_title = final_title.strip("\"'")
+            if final_artist:
+                final_artist = final_artist.strip("\"'")
+
+            return {
+                "title": final_title,
+                "artist": final_artist,
+                "duration": duration,
+                "raw_title": raw_title,
+                "channel": entry.get("channel") or entry.get("uploader"),
+            }
+    except Exception as error:
+        logger.warning("Failed to extract info from URL %s: %s", url, error)
+        return {}
+
+
 def extract_thumbnail_url(query_or_url: str) -> str | None:
     target_query = query_or_url.strip()
     if not (target_query.startswith("http://") or target_query.startswith("https://")):

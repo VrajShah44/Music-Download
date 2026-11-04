@@ -57,6 +57,33 @@ def process_song(
     download_audio: bool = True,
     auto_select: bool = False,
 ) -> dict[str, Any]:
+    source_url = request.get("source_url")
+    title = (request.get("song_title") or "").strip()
+    artist = (request.get("artist") or "").strip()
+
+    is_placeholder_title = not title or title.lower() in {
+        "song title",
+        "unknown track",
+        "unknown",
+        "untitled",
+    }
+    is_placeholder_artist = not artist or artist.lower() in {
+        "artist",
+        "unknown artist",
+        "unknown",
+    }
+
+    if source_url and (is_placeholder_title or is_placeholder_artist):
+        extracted = downloader.extract_track_info_from_url(source_url)
+        if extracted.get("title") and is_placeholder_title:
+            request["song_title"] = extracted["title"]
+            logger.info("Auto-detected song title from URL: %r", extracted["title"])
+        if extracted.get("artist") and is_placeholder_artist:
+            request["artist"] = extracted["artist"]
+            logger.info("Auto-detected artist from URL: %r", extracted["artist"])
+        if extracted.get("duration") and not request.get("duration_ms"):
+            request["duration_ms"] = int(extracted["duration"]) * 1000
+
     identification = musicbrainz.find_recordings(request)
     if selected_recording_id:
         candidate = next(

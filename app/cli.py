@@ -18,11 +18,24 @@ def download_cli(
     url: str | None = None,
     auto_select: bool = True,
 ) -> int:
+    # If song_title is a URL, shift it to url
+    if song_title and (song_title.startswith("http://") or song_title.startswith("https://")):
+        if not url:
+            url = song_title
+        song_title = None
+
+    # Treat generic placeholders as None when url is provided
+    if url:
+        if song_title and song_title.lower() in {"song title", "unknown track", "unknown"}:
+            song_title = None
+        if artist and artist.lower() in {"artist", "unknown artist", "unknown"}:
+            artist = None
+
     if not song_title and not url:
         print("Error: You must provide either a song title or a source URL (--url).", file=sys.stderr)
         return 1
 
-    title = song_title or "Unknown Track"
+    title = song_title or ""
     request: dict[str, Any] = {
         "song_title": title,
         "artist": artist,
@@ -31,8 +44,11 @@ def download_cli(
         "download_audio": True,
     }
 
-    print(f"🎵 Searching and downloading '{title}' by '{artist or 'Unknown'}'...")
-    result = processor.process_song(request, download_audio=True)
+    if url and not title:
+        print(f"🎵 Fetching track information from URL: {url}...")
+    else:
+        print(f"🎵 Searching and downloading '{title}' by '{artist or 'Unknown'}'...")
+    result = processor.process_song(request, download_audio=True, auto_select=auto_select)
 
     if result.get("status") == "needs_selection":
         candidates = result.get("candidates", [])
