@@ -193,10 +193,25 @@ def download_audio(
 
 
 LABEL_KEYWORDS = {
-    "t-series", "saregama", "zee music", "sony music", "yrf", "tips official",
-    "speed records", "universal music", "warner music", "vevo", "atlantic records",
-    "def jam", "ncs", "spinnin", "ultra records", "pop world", "7clouds",
-    "records", "music company", "tseries", "music india", "white hill"
+    # Global & Western labels / channels
+    "vevo", "nocopyrightsounds", "ncs", "spinnin", "monstercat", "the nations",
+    "trap nation", "bass nation", "chill nation", "house nation", "rap nation", "indie nation",
+    "7clouds", "cloudx", "cassiopeia", "taz network", "syrebralvibes", "unique vibes",
+    "sensual musique", "lyrical lemonade", "proximity", "selected.", "majestic casual",
+    "mrsuicidesheep", "chilledcow", "lofigirl", "ultra records", "ultra music", "armada music",
+    "owsla", "anjunabeats", "musical freedom", "dim mak", "fueled by ramen", "sub pop",
+    "hopeless records", "epitaph", "interscope", "republic records", "columbia records",
+    "rca records", "epic records", "geffen", "capitol records", "island records",
+    "virgin records", "motown", "polydor", "asylum records", "atlantic records",
+    "warner music", "warner records", "universal music", "sony music", "def jam", "pop world",
+    # Asian / K-Pop
+    "hybe labels", "bighit", "jyp entertainment", "smtown", "yg entertainment", "starship",
+    # Indian labels
+    "t-series", "saregama", "zee music", "yrf", "tips official", "speed records",
+    "white hill", "times music", "eros now", "aditya music", "lahari music", "svf",
+    # Generic keywords
+    "records", "recordings", "record label", "music group", "music company", "tseries",
+    "music india", "official channel", "entertainment", "promotions",
 }
 
 
@@ -205,6 +220,18 @@ def is_record_label(name: str | None) -> bool:
         return False
     low = name.lower()
     return any(k in low for k in LABEL_KEYWORDS) or low.endswith(" - topic")
+
+
+def parse_vevo_artist(channel: str | None) -> str | None:
+    if not channel:
+        return None
+    ch = channel.strip()
+    if ch.lower().endswith("vevo") and len(ch) > 4:
+        base = ch[:-4].strip()
+        import re
+        spaced = re.sub(r"([a-z])([A-Z])", r"\1 \2", base)
+        return spaced.strip()
+    return None
 
 
 def clean_youtube_url(url: str) -> str:
@@ -254,8 +281,8 @@ def extract_track_info_from_url(url: str) -> dict[str, Any]:
             prefix_pat = r"^(?:(?:full|official|original|lyric(?:al)?|hd|4k)\s+)*(?:video|audio|song|track)?\s*(?:song|video|audio)?\s*:\s*"
             clean_t = re.sub(prefix_pat, "", raw_title, flags=re.I).strip()
 
-            # Strip noise in brackets
-            noise_pat = r"[\(\[\{]\s*(?:official\s*(?:video|audio|music\s*video|lyric\s*video|visualizer)?|lyrics?|audio|video|hd|4k|remastered|explicit|clean|clip\s*officiel|ncs\s*release|hindi|telugu|tamil|punjabi)\s*[\)\]\}]"
+            # Strip noise in brackets and parentheses (NCS, Vevo, official tags)
+            noise_pat = r"[\(\[\{]\s*(?:official\s*(?:video|audio|music\s*video|lyric\s*video|visualizer)?|lyrics?|audio|video|hd|4k|remastered|explicit|clean|clip\s*officiel|ncs\s*(?:release|official\s*(?:audio|video)|fanmade)?|premiere|hindi|telugu|tamil|punjabi)\s*[\)\]\}]"
             clean_t = re.sub(noise_pat, "", clean_t, flags=re.I).strip(" -|:")
 
             parsed_artist, parsed_title, parsed_album = None, None, None
@@ -292,6 +319,42 @@ def extract_track_info_from_url(url: str) -> dict[str, Any]:
             else:
                 parsed_title = clean_t
 
+            # Extract any featured artists (feat. ... / ft. ...)
+            feat = None
+            if parsed_title:
+                feat_match = re.search(
+                    r"[\(\[\{]\s*(?:feat\.?|ft\.?|featuring)\s*([^\)\]\}]+)[\)\]\}]",
+                    parsed_title,
+                    flags=re.I,
+                )
+                if feat_match:
+                    feat = feat_match.group(1).strip()
+                    parsed_title = re.sub(
+                        r"[\(\[\{]\s*(?:feat\.?|ft\.?|featuring)\s*[^\)\]\}]+[\)\]\}]",
+                        "",
+                        parsed_title,
+                        flags=re.I,
+                    ).strip()
+                else:
+                    feat_trailing = re.search(
+                        r"\s+(?:feat\.?|ft\.?|featuring)\s+(.+)$",
+                        parsed_title,
+                        flags=re.I,
+                    )
+                    if feat_trailing:
+                        feat = feat_trailing.group(1).strip()
+                        parsed_title = parsed_title[:feat_trailing.start()].strip()
+
+            if parsed_artist and not feat:
+                feat_in_art = re.search(
+                    r"\s+(?:feat\.?|ft\.?|featuring)\s+(.+)$",
+                    parsed_artist,
+                    flags=re.I,
+                )
+                if feat_in_art:
+                    feat = feat_in_art.group(1).strip()
+                    parsed_artist = parsed_artist[:feat_in_art.start()].strip()
+
             # Extract any (From ...) or (Soundtrack) within title
             if parsed_title:
                 m = re.search(
@@ -303,13 +366,19 @@ def extract_track_info_from_url(url: str) -> dict[str, Any]:
                     parsed_album = m.group(1).strip()
                 parsed_title = re.sub(r"[\(\[\{][^\)\]\}]+[\)\]\}]", "", parsed_title).strip(" -|:")
 
+            # VEVO channel support: extract artist from TaylorSwiftVEVO, etc.
+            vevo_artist = parse_vevo_artist(channel)
+
             if channel.lower().endswith(" - topic"):
                 topic_artist = channel[:-8].strip()
                 if not verified_artist:
                     verified_artist = topic_artist
 
             final_title = verified_track or parsed_title or raw_title
-            final_artist = verified_artist or parsed_artist
+            final_artist = verified_artist or parsed_artist or vevo_artist
+            if feat and final_artist and feat.lower() not in final_artist.lower():
+                final_artist = f"{final_artist}, {feat}"
+
             if not final_artist and not is_record_label(channel):
                 final_artist = channel
 
