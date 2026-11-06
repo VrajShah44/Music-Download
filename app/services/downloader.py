@@ -192,7 +192,41 @@ def download_audio(
     return final_path
 
 
+LABEL_KEYWORDS = {
+    "t-series", "saregama", "zee music", "sony music", "yrf", "tips official",
+    "speed records", "universal music", "warner music", "vevo", "atlantic records",
+    "def jam", "ncs", "spinnin", "ultra records", "pop world", "7clouds",
+    "records", "music company", "tseries", "music india", "white hill"
+}
+
+
+def is_record_label(name: str | None) -> bool:
+    if not name:
+        return False
+    low = name.lower()
+    return any(k in low for k in LABEL_KEYWORDS) or low.endswith(" - topic")
+
+
+def clean_youtube_url(url: str) -> str:
+    import urllib.parse
+    try:
+        parsed = urllib.parse.urlparse(url.strip())
+        if "youtube.com" in parsed.netloc:
+            qs = urllib.parse.parse_qs(parsed.query)
+            v = qs.get("v")
+            if v:
+                return f"https://www.youtube.com/watch?v={v[0]}"
+        elif "youtu.be" in parsed.netloc:
+            v = parsed.path.strip("/")
+            if v:
+                return f"https://www.youtube.com/watch?v={v}"
+    except Exception:
+        pass
+    return url
+
+
 def extract_track_info_from_url(url: str) -> dict[str, Any]:
+    url = clean_youtube_url(url)
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
@@ -208,47 +242,91 @@ def extract_track_info_from_url(url: str) -> dict[str, Any]:
             entry = entries[0] if entries else info
 
             raw_title = entry.get("title") or ""
-            track = entry.get("track")
-            artist = (
-                entry.get("artist")
-                or entry.get("creator")
-                or entry.get("channel")
-                or entry.get("uploader")
-            )
+            verified_track = entry.get("track")
+            verified_artist = entry.get("artist") or entry.get("creator")
+            channel = entry.get("channel") or entry.get("uploader") or ""
             duration = entry.get("duration")
+            desc = entry.get("description") or ""
 
             import re
-            cleaned_title = re.sub(
-                r"[\(\[\{]\s*(?:official\s*(?:video|audio|music\s*video|lyric\s*video|visualizer)?|lyrics?|audio|video|hd|4k|remastered)\s*[\)\]\}]",
-                "",
-                raw_title,
-                flags=re.I,
-            ).strip(" -|:")
 
-            parsed_artist, parsed_title = None, None
-            if " - " in cleaned_title:
-                parts = cleaned_title.split(" - ", 1)
-                parsed_artist, parsed_title = parts[0].strip(), parts[1].strip()
-            elif " | " in cleaned_title:
-                parts = cleaned_title.split(" | ", 1)
-                parsed_title, parsed_artist = parts[0].strip(), parts[1].strip()
+            # Strip prefixes like 'Full Video:', 'Lyrical:', 'Official Video:'
+            prefix_pat = r"^(?:(?:full|official|original|lyric(?:al)?|hd|4k)\s+)*(?:video|audio|song|track)?\s*(?:song|video|audio)?\s*:\s*"
+            clean_t = re.sub(prefix_pat, "", raw_title, flags=re.I).strip()
+
+            # Strip noise in brackets
+            noise_pat = r"[\(\[\{]\s*(?:official\s*(?:video|audio|music\s*video|lyric\s*video|visualizer)?|lyrics?|audio|video|hd|4k|remastered|explicit|clean|clip\s*officiel|ncs\s*release|hindi|telugu|tamil|punjabi)\s*[\)\]\}]"
+            clean_t = re.sub(noise_pat, "", clean_t, flags=re.I).strip(" -|:")
+
+            parsed_artist, parsed_title, parsed_album = None, None, None
+
+            # Check description for credits (especially in official Indian and pop releases)
+            desc_singer = re.search(r"(?:Singer\s*[-:]|Sung by)\s*([^\n\r,|/]+)", desc, flags=re.I)
+            desc_movie = re.search(r"(?:from the Film|Film|Movie|Album)\s*[-:]?\s*[\"\'\s]?([^\"\'\n\r,|/]+)", desc, flags=re.I)
+            if desc_singer:
+                parsed_artist = desc_singer.group(1).strip()
+            if desc_movie:
+                parsed_album = desc_movie.group(1).strip()
+
+            # Analyze title structure
+            if "|" in clean_t:
+                parts = [p.strip() for p in clean_t.split("|") if p.strip()]
+                if parts:
+                    parsed_title = parts[0]
+                    if len(parts) > 1 and not parsed_album:
+                        parsed_album = parts[1]
+                    if not parsed_artist and len(parts) >= 3:
+                        for part in parts[2:]:
+                            if not is_record_label(part):
+                                parsed_artist = part
+                                break
+            elif " - " in clean_t:
+                parts = clean_t.split(" - ", 1)
+                left, right = parts[0].strip(), parts[1].strip()
+                if is_record_label(left):
+                    parsed_title = right
+                else:
+                    if not parsed_artist:
+                        parsed_artist = left
+                    parsed_title = right
             else:
-                parsed_title = cleaned_title
-                parsed_artist = artist
+                parsed_title = clean_t
 
-            final_title = track or parsed_title or raw_title
-            final_artist = artist or parsed_artist
+            # Extract any (From ...) or (Soundtrack) within title
+            if parsed_title:
+                m = re.search(
+                    r"[\(\[\{]\s*(?:from\s*(?:the\s*)?(?:original\s*)?(?:motion\s*picture\s*)?(?:soundtrack\s*)?)?[\"\'\s]?([^\"\'\)\]\}]+)[\"\'\s]?[\)\]\}]",
+                    parsed_title,
+                    flags=re.I,
+                )
+                if m and not parsed_album:
+                    parsed_album = m.group(1).strip()
+                parsed_title = re.sub(r"[\(\[\{][^\)\]\}]+[\)\]\}]", "", parsed_title).strip(" -|:")
+
+            if channel.lower().endswith(" - topic"):
+                topic_artist = channel[:-8].strip()
+                if not verified_artist:
+                    verified_artist = topic_artist
+
+            final_title = verified_track or parsed_title or raw_title
+            final_artist = verified_artist or parsed_artist
+            if not final_artist and not is_record_label(channel):
+                final_artist = channel
+
             if final_title:
                 final_title = final_title.strip("\"'")
             if final_artist:
                 final_artist = final_artist.strip("\"'")
+            if parsed_album:
+                parsed_album = parsed_album.strip("\"'")
 
             return {
                 "title": final_title,
                 "artist": final_artist,
+                "album": parsed_album,
                 "duration": duration,
                 "raw_title": raw_title,
-                "channel": entry.get("channel") or entry.get("uploader"),
+                "channel": channel,
             }
     except Exception as error:
         logger.warning("Failed to extract info from URL %s: %s", url, error)
@@ -256,7 +334,29 @@ def extract_track_info_from_url(url: str) -> dict[str, Any]:
 
 
 def extract_thumbnail_url(query_or_url: str) -> str | None:
-    target_query = query_or_url.strip()
+    target_query = clean_youtube_url(query_or_url.strip())
+    import urllib.parse
+    parsed = urllib.parse.urlparse(target_query)
+    if "youtube.com" in parsed.netloc or "youtu.be" in parsed.netloc:
+        vid = None
+        if "youtube.com" in parsed.netloc:
+            qs = urllib.parse.parse_qs(parsed.query)
+            v = qs.get("v")
+            if v:
+                vid = v[0]
+        elif "youtu.be" in parsed.netloc:
+            vid = parsed.path.strip("/")
+        if vid:
+            maxres = f"https://i.ytimg.com/vi/{vid}/maxresdefault.jpg"
+            try:
+                import httpx
+                r = httpx.head(maxres, timeout=5)
+                if r.status_code == 200:
+                    return maxres
+            except Exception:
+                pass
+            return f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
+
     if not (target_query.startswith("http://") or target_query.startswith("https://")):
         target_query = f"ytsearch1:{target_query}"
 

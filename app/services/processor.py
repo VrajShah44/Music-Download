@@ -58,8 +58,13 @@ def process_song(
     auto_select: bool = False,
 ) -> dict[str, Any]:
     source_url = request.get("source_url")
+    if source_url:
+        source_url = downloader.clean_youtube_url(source_url)
+        request["source_url"] = source_url
+
     title = (request.get("song_title") or "").strip()
     artist = (request.get("artist") or "").strip()
+    album = (request.get("album_name") or request.get("movie_name") or "").strip()
 
     is_placeholder_title = not title or title.lower() in {
         "song title",
@@ -73,7 +78,7 @@ def process_song(
         "unknown",
     }
 
-    if source_url and (is_placeholder_title or is_placeholder_artist):
+    if source_url and (is_placeholder_title or is_placeholder_artist or not album):
         extracted = downloader.extract_track_info_from_url(source_url)
         if extracted.get("title") and is_placeholder_title:
             request["song_title"] = extracted["title"]
@@ -81,6 +86,10 @@ def process_song(
         if extracted.get("artist") and is_placeholder_artist:
             request["artist"] = extracted["artist"]
             logger.info("Auto-detected artist from URL: %r", extracted["artist"])
+        if extracted.get("album") and not album:
+            request["album_name"] = extracted["album"]
+            request["movie_name"] = extracted["album"]
+            logger.info("Auto-detected album from URL: %r", extracted["album"])
         if extracted.get("duration") and not request.get("duration_ms"):
             request["duration_ms"] = int(extracted["duration"]) * 1000
 
