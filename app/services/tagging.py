@@ -203,7 +203,8 @@ def tag_audio(
         if lyricist and not audio.tags.get("----:com.apple.iTunes:LYRICIST"):
             audio.tags["----:com.apple.iTunes:LYRICIST"] = [lyricist.encode()]
         if lyrics_text:
-            audio.tags["\xa9lyr"] = [str(lyrics_text)]
+            # MP4 lyrics atom (©lyr) in Apple ecosystem uses standard carriage returns '\r'
+            audio.tags["\xa9lyr"] = [str(lyrics_text).replace("\r\n", "\n").replace("\n", "\r")]
         if cover_path and cover_path.is_file():
             image_format = (
                 MP4Cover.FORMAT_PNG
